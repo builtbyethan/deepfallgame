@@ -44,7 +44,7 @@ export const MainMenu: React.FC<{ setGameState: React.Dispatch<React.SetStateAct
       <div className="absolute inset-0 pointer-events-none opacity-20 z-0" 
            style={{ backgroundImage: 'linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)', backgroundSize: '40px 40px' }} />
       
-      <h1 className="text-6xl text-center font-bold mb-16 z-10 tracking-widest" style={{ color: "hsl(var(--primary))", textShadow: "4px 4px 0 hsl(var(--border))" }}>DUNGEON DELVE</h1>
+      <h1 className="text-6xl text-center font-bold mb-16 z-10 tracking-widest" style={{ color: "hsl(var(--primary))", textShadow: "4px 4px 0 hsl(var(--border))" }}>DEEP FALL</h1>
       
       <button
         onClick={() => setGameState(prev => ({ ...prev, screen: "saves" }))}

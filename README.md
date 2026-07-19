@@ -1,4 +1,4 @@
-# Deepfall — Dungeon Delve
+# Deep Fall
 
 A fast-paced 2D pixel-art **roguelike arena survival** game. Pick a class, drop into
 the dungeon, and survive escalating rounds of enemies and bosses — earning coins to
@@ -6,6 +6,13 @@ upgrade and unlock abilities between every round.
 
 Built with **React + TypeScript + Vite**, rendered on an HTML5 **Canvas**, with sound
 driven by the **Web Audio API** (no audio files — everything is synthesized in-browser).
+
+![Deep Fall main menu — choose from Blitzer, Brute, or Wizard](docs/screenshot-menu.png)
+
+*Choose your class, then survive as deep as you can. Between rounds, spend coins in the
+upgrade shop:*
+
+![Deep Fall upgrade shop between rounds](docs/screenshot-shop.png)
 
 ---
 
