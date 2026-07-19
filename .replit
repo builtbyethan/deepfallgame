@@ -1,0 +1,32 @@
+run = "npm run dev"
+entrypoint = "src/main.tsx"
+modules = ["nodejs-20"]
+
+hidden = [".config", "node_modules", "dist"]
+
+[nix]
+channel = "stable-24_05"
+
+[env]
+PORT = "5173"
+
+[[ports]]
+localPort = 5173
+externalPort = 80
+
+[deployment]
+build = ["npm", "run", "build"]
+run = ["npm", "run", "serve"]
+deploymentTarget = "static"
+publicDir = "dist/public"
+
+[workflows]
+runButton = "Dev"
+
+[[workflows.workflow]]
+name = "Dev"
+mode = "sequential"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "npm install && npm run dev"
