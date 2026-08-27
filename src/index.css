@@ -4,6 +4,14 @@
 
 @custom-variant dark (&:is(.dark *));
 
+@font-face {
+  font-family: "Quicksand";
+  src: url("/fonts/Quicksand-Book.otf") format("opentype");
+  font-style: normal;
+  font-weight: 300 800;
+  font-display: swap;
+}
+
 @theme inline {
   --color-background: hsl(var(--background));
   --color-foreground: hsl(var(--foreground));
@@ -112,10 +120,10 @@
   --chart-4: 45 100% 50%;
   --chart-5: 140 70% 50%;
 
-  --app-font-sans: 'Inter', sans-serif;
-  --app-font-serif: Georgia, serif;
-  --app-font-mono: Menlo, monospace;
-  --app-font-pixel: 'Courier New', monospace;
+  --app-font-sans: "Quicksand", sans-serif;
+  --app-font-serif: "Quicksand", sans-serif;
+  --app-font-mono: "Quicksand", sans-serif;
+  --app-font-pixel: "Quicksand", sans-serif;
   
   --radius: 0; 
   --spacing: 0.25rem;

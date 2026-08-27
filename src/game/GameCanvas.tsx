@@ -5,6 +5,7 @@ import { SPELL_BY_KEY } from "./wizardSpells";
 import { requestCast } from "./wizardInput";
 import { requestUltimate } from "./wizardUltimateState";
 import { requestDash, requestOverclock, requestClones, requestBlitzerUltimate } from "./blitzerState";
+import { requestCharge, requestQuake, requestRage, requestClashHit, liveBruteState } from "./bruteState";
 import { initAudio, startMusic, stopMusic } from "./audio";
 
 interface GameCanvasProps {
@@ -64,6 +65,18 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ gameState, setGameState 
       if ((e.key === "e" || e.key === "E") && !e.repeat) requestClones();
       // R — fire the Blitz Storm ultimate once the meter is full.
       if ((e.key === "r" || e.key === "R") && !e.repeat) requestBlitzerUltimate();
+      // Brute abilities (edge-triggered; repeat-guarded so a held key can't
+      // re-fire). Only queue while actually playing so a press in the shop /
+      // pause can't fire on the first frame back in the arena.
+      // Shift = Shoulder Charge, Q = Ground Quake, E = Berserker Rage.
+      if (screenRef.current === "game") {
+        if (e.key === "Shift" && !e.repeat) requestCharge();
+        if ((e.key === "q" || e.key === "Q") && !e.repeat) requestQuake();
+        if ((e.key === "e" || e.key === "E") && !e.repeat) requestRage();
+        // SPACE — Shoulder Charge clash QTE hit. Only queued while the clash
+        // window is live so stray presses can never bank a hidden success.
+        if (e.key === " " && !e.repeat && liveBruteState.clashActive) requestClashHit();
+      }
     };
     const handleKeyUp = (e: KeyboardEvent) => { keys.current[e.key] = false; };
     // Pointer on the canvas is also a valid gesture (mobile / first click).
@@ -113,7 +126,7 @@ export const GameCanvas: React.FC<GameCanvasProps> = ({ gameState, setGameState 
   return (
     <canvas 
       ref={canvasRef} 
-      className="fixed inset-0 w-full h-full cursor-none block bg-background" 
+      className="fixed inset-0 w-full h-full cursor-default block bg-background"
       style={{ imageRendering: 'pixelated' }}
     />
   );
