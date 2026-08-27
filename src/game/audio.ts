@@ -322,3 +322,58 @@ export function sfxSlam() {
   sfxOsc("sine", 75, 0.05, 0.30, 0.90, 28);
   sfxNoise(0.22, 0.55, 120);
 }
+
+/** Brute Shoulder Charge — heavy rushing whoosh with a low body behind it. */
+export function sfxBruteCharge() {
+  if (!_ctx) return;
+  sfxOsc("sawtooth", 140, 0.06, 0.22, 0.40, 60);
+  sfxOsc("sine", 90, 0.05, 0.18, 0.45, 45);
+  sfxNoise(0.22, 0.35, 500);
+}
+
+/** Ground Quake stomp — subterranean boom + gravel rumble. */
+export function sfxQuake() {
+  if (!_ctx) return;
+  sfxOsc("sine", 60, 0.08, 0.50, 0.95, 22);
+  sfxOsc("square", 110, 0.03, 0.20, 0.25, 40);
+  sfxNoise(0.45, 0.50, 90);
+  sfxNoise(0.20, 0.25, 900);
+}
+
+/** Clash lock — metallic grind + tense low drone as the charge connects. */
+export function sfxClashLock() {
+  if (!_ctx || !_sfxBus) return;
+  const t = now();
+  _osc("sawtooth", 200, t, 0.05, 0.30, 0.40, _sfxBus, 70);
+  _osc("sine", 55, t, 0.30, 0.60, 0.45, _sfxBus);
+  _noise(t, 0.30, 0.30, 1800, _sfxBus);
+}
+
+/** Clash QTE landed — massive impact + triumphant rising sting. */
+export function sfxClashSuccess() {
+  if (!_ctx || !_sfxBus) return;
+  const t = now();
+  _osc("sine", 70, t, 0.06, 0.35, 0.95, _sfxBus, 30);
+  _noise(t, 0.30, 0.60, 150, _sfxBus);
+  _noise(t, 0.15, 0.35, 3000, _sfxBus);
+  [[523, 0.05], [784, 0.13], [1047, 0.21]].forEach(([f, d]) =>
+    _osc("square", f, t + d, 0.05, 0.18, 0.30, _sfxBus!));
+}
+
+/** Clash QTE missed — dull shove + sagging downward tone. */
+export function sfxClashMiss() {
+  if (!_ctx || !_sfxBus) return;
+  const t = now();
+  _osc("sine", 160, t, 0.04, 0.28, 0.40, _sfxBus, 70);
+  _osc("square", 220, t + 0.08, 0.05, 0.22, 0.18, _sfxBus, 110);
+  _noise(t, 0.16, 0.25, 400, _sfxBus);
+}
+
+/** Berserker Rage ignites — rising guttural roar. */
+export function sfxRage() {
+  if (!_ctx || !_sfxBus) return;
+  const t = now();
+  _osc("sawtooth", 90, t, 0.15, 0.55, 0.50, _sfxBus, 260);
+  _osc("square", 180, t + 0.08, 0.10, 0.40, 0.30, _sfxBus, 420);
+  _noise(t, 0.55, 0.30, 250, _sfxBus);
+}

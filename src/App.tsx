@@ -68,7 +68,7 @@ export default function App() {
           onClick={toggleMute}
           title={muted ? "Unmute" : "Mute"}
           className="fixed bottom-4 right-4 z-50 w-9 h-9 flex items-center justify-center rounded-full bg-black/60 border border-white/20 text-white text-sm hover:bg-black/80 transition-colors select-none"
-          style={{ fontFamily: "monospace" }}
+           style={{ fontFamily: "Quicksand, sans-serif" }}
         >
           {muted ? "🔇" : "🔊"}
         </button>

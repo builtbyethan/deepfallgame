@@ -62,6 +62,11 @@ export interface Player extends Entity {
   bruteTimer: number;
   bruteDamage: number;
   bruteHitCount: number; // landed hits toward the mega slam
+  // Brute abilities (Shoulder Charge / Ground Quake / Berserker Rage).
+  bruteChargeCd: number;   // seconds until Shoulder Charge is ready again
+  bruteQuakeCd: number;    // seconds until Ground Quake is ready again
+  bruteRageCd: number;     // seconds until Berserker Rage is ready again
+  bruteRageActive: number; // seconds of fury remaining (0 = inactive)
   // Wizard
   wizardSpells: number; // unlocked spells count
   spellTimers: Record<string, number>;
@@ -86,6 +91,7 @@ export interface Enemy extends Entity {
   enhancedBurn: boolean;  // burn ticks deal 1.0 instead of 0.1 (set by shatter)
   superShock: boolean;    // shock ticks deal 0.45 instead of 0.3 (set by soaked-thunderbolt)
   tier: number;
+  slimeTrailTimer?: number; // seconds until this moving enemy drops its next puddle
   isDummy?: boolean;
 }
 
@@ -119,6 +125,16 @@ export interface Coin extends Entity {
   value: number;
   bobTimer: number;
   magnetized: boolean;
+}
+
+// A temporary patch of slime dropped by a moving enemy. Patches are ground
+// hazards: they fade independently, slow the player, and tick damage at a
+// controlled cadence rather than every frame.
+export interface SlimePuddle extends Entity {
+  lifeTime: number;
+  maxLife: number;
+  sourceDamage: number;
+  color: string;
 }
 
 export interface FistSlam {
@@ -207,6 +223,47 @@ export interface BlitzerUltGhost {
   shatterTimer: number; // counts up during the shatter fade-out
 }
 
+// An enemy sent flying by a successful clash — travels along a velocity vector,
+// dealing chain-impact damage to enemies it collides with along the way, and a
+// small wall-impact bonus when it reaches the arena boundary.
+export interface LaunchedEnemy {
+  enemyId: string;
+  vel: Vector2;        // px/sec (decelerates each frame)
+  timeLeft: number;    // seconds of flight remaining
+  chainDmg: number;    // damage dealt to each enemy struck mid-flight
+  wallDmg: number;     // bonus damage to the launched enemy itself on wall contact
+  hitIds: Set<string>; // IDs already chain-hit this flight (no double-tap)
+  color: string;       // particle / trail tint
+  hasHitWall: boolean; // wall bonus already triggered (once per launch)
+}
+
+// The brute's Shoulder Charge rush — a short high-speed dash that damages and
+// knocks back every enemy plowed through (each enemy is hit at most once).
+export interface BruteCharge {
+  dir: Vector2;         // normalised rush direction, locked at activation
+  timeLeft: number;     // seconds of rush remaining
+  hitIds: Set<string>;  // enemies already hit this rush
+}
+
+// The Shoulder Charge clash QTE — the world freezes while the brute and the
+// clashed enemies strain against each other; the player must press SPACE inside
+// the shrinking window. resolved !== null keeps the lock posed for a brief
+// result flash before the world unfreezes.
+export interface BruteClash {
+  pos: Vector2;          // clash point (midpoint of the brute and first enemy hit)
+  dir: Vector2;          // charge direction, used for the success launch
+  enemyIds: string[];    // enemies locked in the clash
+  timer: number;         // counts up toward CLASH_WINDOW (or the linger after resolve)
+  resolved: "perfect" | "good" | "miss" | null;
+}
+
+// The expanding shockwave ring left by a Ground Quake stomp (visual only —
+// damage/paralyze are applied instantly on activation).
+export interface BruteQuake {
+  pos: Vector2;
+  timer: number; // counts up to QUAKE_RING_DURATION
+}
+
 export interface TransientGameState {
   player: Player;
   enemies: Enemy[];
@@ -214,8 +271,15 @@ export interface TransientGameState {
   particles: Particle[];
   texts: FloatingText[];
   coins: Coin[];
+  slimePuddles: SlimePuddle[];
+  slimeDamageTimer: number;
+  announcement: { text: string; timer: number; maxTime: number } | null;
   fistSlams: FistSlam[];
   megaSlam: MegaSlam | null;
+  bruteCharge: BruteCharge | null;
+  bruteClash: BruteClash | null;
+  bruteQuake: BruteQuake | null;
+  launchedEnemies: LaunchedEnemy[];
   blitzerDashTrail: DashAfterimage[];
   phantomClones: PhantomClone[];
   blitzerUltimate: BlitzerUltimate | null;

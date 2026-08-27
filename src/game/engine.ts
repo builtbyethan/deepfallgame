@@ -1,4 +1,5 @@
 import { TransientGameState, GameState, Vector2, Enemy, Projectile, Particle, FloatingText, Coin, FistSlam } from "./types";
+
 import { liveWizardState, takePendingCasts } from "./wizardInput";
 import {
   liveBlitzerState,
@@ -40,7 +41,43 @@ import {
   takePendingClones,
   takePendingBlitzerUltimate,
 } from "./blitzerState";
-import { liveBruteState, resetBruteState, HITS_TO_CHARGE, MEGA_DAMAGE_MULT, MEGA_DROP_DURATION, MEGA_IMPACT_DURATION } from "./bruteState";
+import {
+  liveBruteState,
+  resetBruteState,
+  HITS_TO_CHARGE,
+  MEGA_DAMAGE_MULT,
+  MEGA_DROP_DURATION,
+  MEGA_IMPACT_DURATION,
+  CHARGE_COOLDOWN,
+  CHARGE_DURATION as BRUTE_CHARGE_DURATION,
+  CHARGE_SPEED,
+  CHARGE_DAMAGE,
+  CHARGE_HIT_RADIUS,
+  CHARGE_KNOCKBACK,
+  CLASH_WINDOW,
+  CLASH_DAMAGE_MULT,
+  CLASH_KNOCKBACK,
+  CLASH_GOOD_DAMAGE_MULT,
+  CLASH_GOOD_KNOCKBACK,
+  CLASH_PERFECT_ZONE,
+  CLASH_MISS_CD_FRACTION,
+  CLASH_RESULT_LINGER,
+  QUAKE_COOLDOWN,
+  QUAKE_RADIUS,
+  QUAKE_DAMAGE,
+  QUAKE_PARALYZE,
+  QUAKE_RING_DURATION,
+  RAGE_COOLDOWN,
+  RAGE_DURATION,
+  RAGE_ATTACK_INTERVAL_MULT,
+  RAGE_DAMAGE_MULT,
+  BRUTE_ABILITY_COLOR,
+  ABILITIES_UNLOCK_ROUND,
+  takePendingCharge,
+  takePendingQuake,
+  takePendingRage,
+  takePendingClashHit,
+} from "./bruteState";
 import {
   liveWizardUltimateState,
   resetWizardUltimateState,
@@ -57,11 +94,13 @@ import {
   RADIANCE_COLOR,
 } from "./wizardUltimateState";
 import { testControls } from "./testControls";
-import { SPRITES, drawSprite, makeEnemySprite, makeBossSprite } from "./sprites";
+import { SPRITES, drawSprite, makeEnemySprite, makeBossSprite, getEnemyTier, getBossTier } from "./sprites";
 import {
   sfxHit, sfxDash, sfxBlitzFire, sfxBlitzShatter,
   sfxDeath, sfxBossDeath, sfxCoin, sfxHurt, sfxRoundClear,
   sfxOverclock, sfxClones, sfxWizardCast, sfxWizardUlt, sfxSlam,
+  sfxBruteCharge, sfxQuake, sfxRage,
+  sfxClashLock, sfxClashSuccess, sfxClashMiss,
 } from "./audio";
 
 // Grey training-dummy sprite (matches enemy silhouette but desaturated).
@@ -102,6 +141,19 @@ const FIST_COLORS: Record<number, string> = { 1: "#7F1D1D", 2: "#EF4444", 3: "#F
 // Sky-blue palette for blitzer punches (outline / mid / highlight)
 const BLITZER_FIST_COLORS: Record<number, string> = { 1: "#0EA5E9", 2: "#38BDF8", 3: "#E0F2FE" };
 
+const SLIME_PUDDLE_LIFETIME = 5;
+const SLIME_PUDDLE_INTERVAL = 0.6;
+// A full late wave is 30 enemies plus one boss. At one drop every 0.6 seconds,
+// 360 patches safely retains every five-second trail (31 × ceil(5 / 0.6) = 279).
+const SLIME_PUDDLE_MAX = 360;
+const SLIME_PUDDLE_SLOW_MULTIPLIER = 0.58;
+const SLIME_PUDDLE_DAMAGE_MULTIPLIER = 0.25;
+const SLIME_PUDDLE_DAMAGE_INTERVAL = 1;
+const BOSS_SWARM_ROUND = 30;
+const BOSS_SWARM_TIER = 5; // the boss introduced at round 25
+const BOSS_SWARM_COUNT = 10;
+const BOSS_SWARM_WARNING_DURATION = 2.8;
+
 export const initGame = (gameState: GameState, width: number, height: number): TransientGameState => {
   // Clear any leftover barrage charge from a previous run so the HUD bar
   // starts empty on the very first frame of a new blitzer game.
@@ -135,6 +187,10 @@ export const initGame = (gameState: GameState, width: number, height: number): T
     bruteTimer: 0,
     bruteDamage: 3 + (gameState.selectedClass === "brute" ? gameState.upgradeCounts : 0),
     bruteHitCount: 0,
+    bruteChargeCd: 0,
+    bruteQuakeCd: 0,
+    bruteRageCd: 0,
+    bruteRageActive: 0,
     wizardSpells: gameState.selectedClass === "wizard" ? gameState.upgradeCounts : 0,
     spellTimers: {
       fireball: 0,
@@ -162,8 +218,17 @@ export const initGame = (gameState: GameState, width: number, height: number): T
     particles: [],
     texts: [],
     coins: [],
+    slimePuddles: [],
+    slimeDamageTimer: 0,
+    announcement: gameState.round === BOSS_SWARM_ROUND && !gameState.testMode
+      ? { text: "WARNING! BOSS SWARM", timer: BOSS_SWARM_WARNING_DURATION, maxTime: BOSS_SWARM_WARNING_DURATION }
+      : null,
     fistSlams: [],
     megaSlam: null,
+    bruteCharge: null,
+    bruteClash: null,
+    bruteQuake: null,
+    launchedEnemies: [],
     blitzerDashTrail: [],
     phantomClones: [],
     blitzerUltimate: null,
@@ -192,39 +257,11 @@ export const initGame = (gameState: GameState, width: number, height: number): T
   const enemySpeedBase = 60 + tier * 8;
   const safeRadius = Math.max(width, height) / 2 + 50;
 
-  for (let i = 0; i < numEnemies; i++) {
-    const angle = Math.random() * Math.PI * 2;
-    const dist = safeRadius + Math.random() * 100;
+  const spawnBoss = (id: string, bossTier: number, angle: number, dist: number) => {
+    const bossHp = 10 + 15 * (bossTier - 1);
     state.enemies.push({
-      id: `e_${i}`,
+      id,
       pos: { x: width / 2 + Math.cos(angle) * dist, y: height / 2 + Math.sin(angle) * dist },
-      radius: enemyRadius,
-      hp: hpBase,
-      maxHp: hpBase,
-      speed: enemySpeedBase + Math.random() * 10,
-      isBoss: false,
-      damage: 1 + Math.floor(tier / 2),
-      burnTicks: 0,
-      burnTimer: 0,
-      slowTimer: 0,
-      flashTimer: 0,
-      paralyzedTimer: 0,
-      shockTimer: 0,
-      cursedTimer: 0,
-      soakedTimer: 0,
-      evaporateTimer: 0,
-      enhancedBurn: false,
-      superShock: false,
-      tier
-    });
-  }
-
-  if (round % 5 === 0) {
-    const bossHp = 10 + 15 * ((round / 5) - 1);
-    const angle = Math.random() * Math.PI * 2;
-    state.enemies.push({
-      id: `boss`,
-      pos: { x: width / 2 + Math.cos(angle) * safeRadius, y: height / 2 + Math.sin(angle) * safeRadius },
       radius: 24,
       hp: bossHp,
       maxHp: bossHp,
@@ -242,14 +279,87 @@ export const initGame = (gameState: GameState, width: number, height: number): T
       evaporateTimer: 0,
       enhancedBurn: false,
       superShock: false,
-      tier: Math.floor(round / 5)
+      tier: bossTier
     });
+  };
+
+  if (round === BOSS_SWARM_ROUND) {
+    // Round 30 is a dedicated swarm: ten copies of the round-25 Blood Empress.
+    for (let i = 0; i < BOSS_SWARM_COUNT; i++) {
+      const angle = (i / BOSS_SWARM_COUNT) * Math.PI * 2 + Math.random() * 0.22;
+      spawnBoss(`swarm_boss_${i}`, BOSS_SWARM_TIER, angle, safeRadius + 30 + Math.random() * 90);
+    }
+  } else {
+    for (let i = 0; i < numEnemies; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const dist = safeRadius + Math.random() * 100;
+      state.enemies.push({
+        id: `e_${i}`,
+        pos: { x: width / 2 + Math.cos(angle) * dist, y: height / 2 + Math.sin(angle) * dist },
+        radius: enemyRadius,
+        hp: hpBase,
+        maxHp: hpBase,
+        speed: enemySpeedBase + Math.random() * 10,
+        isBoss: false,
+        damage: 1 + Math.floor(tier / 2),
+        burnTicks: 0,
+        burnTimer: 0,
+        slowTimer: 0,
+        flashTimer: 0,
+        paralyzedTimer: 0,
+        shockTimer: 0,
+        cursedTimer: 0,
+        soakedTimer: 0,
+        evaporateTimer: 0,
+        enhancedBurn: false,
+        superShock: false,
+        tier
+      });
+    }
+  }
+
+  if (round % 5 === 0 && round !== BOSS_SWARM_ROUND) {
+    const angle = Math.random() * Math.PI * 2;
+    spawnBoss(`boss`, Math.floor(round / 5), angle, safeRadius);
   }
 
   return state;
 };
 
 const distSq = (a: Vector2, b: Vector2) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
+
+const slimeColorFor = (enemy: Enemy) =>
+  enemy.isBoss ? getBossTier(enemy.tier).mid : getEnemyTier(enemy.tier).mid;
+
+const spawnSlimePuddle = (state: TransientGameState, enemy: Enemy) => {
+  state.slimePuddles.push({
+    id: `slime_${Math.random().toString(36).slice(2, 9)}`,
+    pos: {
+      x: enemy.pos.x + (Math.random() - 0.5) * enemy.radius * 0.4,
+      y: enemy.pos.y + (Math.random() - 0.5) * enemy.radius * 0.4,
+    },
+    radius: Math.max(13, enemy.radius * (enemy.isBoss ? 0.95 : 0.8)),
+    lifeTime: SLIME_PUDDLE_LIFETIME,
+    maxLife: SLIME_PUDDLE_LIFETIME,
+    sourceDamage: enemy.damage,
+    color: slimeColorFor(enemy),
+  });
+  if (state.slimePuddles.length > SLIME_PUDDLE_MAX) state.slimePuddles.shift();
+};
+
+const advanceSlimeTrail = (
+  state: TransientGameState,
+  enemy: Enemy,
+  elapsed: number,
+  distanceMoved: number
+) => {
+  if (distanceMoved <= 0.1) return;
+  enemy.slimeTrailTimer = (enemy.slimeTrailTimer ?? Math.random() * SLIME_PUDDLE_INTERVAL) - elapsed;
+  while (enemy.slimeTrailTimer <= 0) {
+    spawnSlimePuddle(state, enemy);
+    enemy.slimeTrailTimer += SLIME_PUDDLE_INTERVAL;
+  }
+};
 
 // Squared distance from point p to the line segment a→b (used for dash-path hits).
 const distToSegmentSq = (p: Vector2, a: Vector2, b: Vector2) => {
@@ -304,6 +414,124 @@ export const updateGame = (
 
   const { player, enemies, projectiles, particles, texts, coins } = state;
 
+  // --- Shoulder Charge clash QTE ------------------------------------------
+  // While the clash is unresolved the whole world freezes: no movement,
+  // attacks, or enemy updates — only the QTE timer runs, so it can never
+  // soft-lock (timeout resolves as a miss).
+  if (state.bruteClash && state.bruteClash.resolved === null) {
+    const clash = state.bruteClash;
+    clash.timer += dt;
+    const pressed = takePendingClashHit();
+    const timedOut = clash.timer >= CLASH_WINDOW;
+    if (pressed || timedOut) {
+      // Grade the timing: perfect zone is when the shrinking ring has almost
+      // reached the inner target ring (progress ≤ CLASH_PERFECT_ZONE).
+      const prog = Math.max(0, 1 - clash.timer / CLASH_WINDOW);
+      let result: "perfect" | "good" | "miss";
+      if (!pressed || timedOut) {
+        result = "miss";
+      } else if (prog <= CLASH_PERFECT_ZONE) {
+        result = "perfect";
+      } else {
+        result = "good";
+      }
+      clash.resolved = result;
+      clash.timer = 0; // reuse the timer for the result linger
+
+      const dmg = result === "perfect" ? CHARGE_DAMAGE * CLASH_DAMAGE_MULT
+                : result === "good"    ? CHARGE_DAMAGE * CLASH_GOOD_DAMAGE_MULT
+                : CHARGE_DAMAGE;
+      const kb  = result === "perfect" ? CLASH_KNOCKBACK
+                : result === "good"    ? CLASH_GOOD_KNOCKBACK
+                : CHARGE_KNOCKBACK;
+      const dmgColor = result === "perfect" ? "#FBBF24"
+                     : result === "good"    ? "#FB923C"
+                     : BRUTE_ABILITY_COLOR;
+
+      // Launch speed and chain-damage config (defined here to stay near the clash block).
+      // perfect: ~340 px at 970 px/s over 0.35 s.  good: ~200 px at 715 px/s over 0.28 s.
+      const LAUNCH_SPEED_PERFECT = 970;
+      const LAUNCH_SPEED_GOOD   = 715;
+      const LAUNCH_TIME_PERFECT = 0.35;
+      const LAUNCH_TIME_GOOD    = 0.28;
+      // Chain collision: launched enemy deals this much damage to each enemy it plows through.
+      const CHAIN_DMG_PERFECT = CHARGE_DAMAGE * CLASH_DAMAGE_MULT * 0.5;    // 8
+      const CHAIN_DMG_GOOD    = CHARGE_DAMAGE * CLASH_GOOD_DAMAGE_MULT * 0.4; // 3.2
+      // Bonus damage to the launched enemy itself if it smacks a wall.
+      const WALL_DMG_PERFECT = 4;
+      const WALL_DMG_GOOD    = 2;
+
+      enemies.forEach(e => {
+        if (e.markedForDeletion || !clash.enemyIds.includes(e.id)) return;
+        // Same curse/evaporate amplifiers applyDmg uses (brute never charges
+        // the wizard/blitzer meters, so inline application is equivalent).
+        let mult = 1;
+        if (e.cursedTimer > 0) mult *= 1.5;
+        if (e.evaporateTimer > 0) mult *= 1.5;
+        const dealt = dmg * mult;
+        e.hp -= dealt;
+        e.flashTimer = 0.2;
+        spawnText(state, e.pos, dealt.toFixed(1), dmgColor);
+        spawnParticles(state, e.pos, result === "miss" ? "#EF4444" : dmgColor);
+        if (result === "perfect") spawnParticles(state, e.pos, "#FDE68A");
+
+        if (result === "perfect" || result === "good") {
+          // Visually tween the enemy through the air instead of teleporting.
+          const speed = result === "perfect" ? LAUNCH_SPEED_PERFECT : LAUNCH_SPEED_GOOD;
+          const travelTime = result === "perfect" ? LAUNCH_TIME_PERFECT : LAUNCH_TIME_GOOD;
+          const chainDmg  = result === "perfect" ? CHAIN_DMG_PERFECT : CHAIN_DMG_GOOD;
+          const wallDmg   = result === "perfect" ? WALL_DMG_PERFECT : WALL_DMG_GOOD;
+          const color     = result === "perfect" ? "#FBBF24" : "#FB923C";
+          // Remove any existing launch entry for this enemy so a fresh one takes over.
+          state.launchedEnemies = state.launchedEnemies.filter(lc => lc.enemyId !== e.id);
+          state.launchedEnemies.push({
+            enemyId: e.id,
+            vel: { x: clash.dir.x * speed, y: clash.dir.y * speed },
+            timeLeft: travelTime,
+            chainDmg,
+            wallDmg,
+            hitIds: new Set(clash.enemyIds), // don't chain-hit siblings from the same clash
+            color,
+            hasHitWall: false,
+          });
+        } else {
+          // Miss: small instant shove (unchanged original behaviour).
+          const startX = e.pos.x;
+          const startY = e.pos.y;
+          e.pos.x = Math.max(e.radius, Math.min(width - e.radius, e.pos.x + clash.dir.x * kb));
+          e.pos.y = Math.max(e.radius, Math.min(height - e.radius, e.pos.y + clash.dir.y * kb));
+          advanceSlimeTrail(state, e, dt, Math.hypot(e.pos.x - startX, e.pos.y - startY));
+        }
+      });
+
+      if (result === "perfect") {
+        spawnText(state, { x: clash.pos.x, y: clash.pos.y - 44 }, "PERFECT!", "#FBBF24");
+        state.shakeTimer = Math.max(state.shakeTimer, 0.4);
+        sfxClashSuccess();
+        // The full (long) cooldown was already applied when the charge began.
+      } else if (result === "good") {
+        spawnText(state, { x: clash.pos.x, y: clash.pos.y - 44 }, "GOOD!", "#FB923C");
+        state.shakeTimer = Math.max(state.shakeTimer, 0.22);
+        sfxClashSuccess();
+        // Good hit: keep the full cooldown (earned something, just not peak).
+      } else {
+        spawnText(state, { x: clash.pos.x, y: clash.pos.y - 44 }, "MISS", "#9CA3AF");
+        // Consolation: the long cooldown restarts at half length.
+        player.bruteChargeCd = CHARGE_COOLDOWN * CLASH_MISS_CD_FRACTION;
+        state.shakeTimer = Math.max(state.shakeTimer, 0.12);
+        sfxClashMiss();
+      }
+    } else {
+      // Continuous strain shake while the two are locked.
+      state.shakeTimer = Math.max(state.shakeTimer, 0.05);
+    }
+    // Mirror for the HUD/overlay even though the rest of the frame is skipped.
+    liveBruteState.clashActive = clash.resolved === null;
+    liveBruteState.clashProgress = Math.max(0, 1 - clash.timer / CLASH_WINDOW);
+    liveBruteState.clashResult = clash.resolved;
+    if (clash.resolved === null) return; // hold the freeze until resolved
+  }
+
   // Every prior ultimate use scales up the charge required by ALL ultimates
   // (blitzer Blitz Storm + wizard Divine Pillar) so repeat ults cost more.
   const ultPenaltyMult = 1 + (gameState.ultChargePenalty ?? 0) * ULT_PENALTY_STEP;
@@ -326,8 +554,12 @@ export const updateGame = (
     player.blitzerFacing.y = dy;
   }
 
-  player.pos.x = Math.max(player.radius, Math.min(width - player.radius, player.pos.x + dx * player.speed * dt));
-  player.pos.y = Math.max(player.radius, Math.min(height - player.radius, player.pos.y + dy * player.speed * dt));
+  const slowedBySlime = state.slimePuddles.some(
+    puddle => distSq(player.pos, puddle.pos) < (player.radius + puddle.radius) ** 2
+  );
+  const playerSpeed = player.speed * (slowedBySlime ? SLIME_PUDDLE_SLOW_MULTIPLIER : 1);
+  player.pos.x = Math.max(player.radius, Math.min(width - player.radius, player.pos.x + dx * playerSpeed * dt));
+  player.pos.y = Math.max(player.radius, Math.min(height - player.radius, player.pos.y + dy * playerSpeed * dt));
 
   state.playerMoving = dx !== 0 || dy !== 0;
   state.animTime += dt;
@@ -363,9 +595,46 @@ export const updateGame = (
 
   if (player.iFrames > 0) player.iFrames -= dt;
   if (state.shakeTimer > 0) state.shakeTimer -= dt;
+  if (state.announcement) {
+    state.announcement.timer -= dt;
+    if (state.announcement.timer <= 0) state.announcement = null;
+  }
 
   let needSync = false;
   const updates: Partial<GameState> = {};
+
+  // Slime patches fade independently. A single strongest overlapping puddle
+  // controls the one-second hazard tick so dense trails remain dangerous but
+  // never become frame-rate or overlap-count damage.
+  state.slimePuddles.forEach(puddle => { puddle.lifeTime -= dt; });
+  state.slimePuddles = state.slimePuddles.filter(puddle => puddle.lifeTime > 0);
+  const puddlesUnderPlayer = state.slimePuddles.filter(
+    puddle => distSq(player.pos, puddle.pos) < (player.radius + puddle.radius) ** 2
+  );
+  if (puddlesUnderPlayer.length) {
+    state.slimeDamageTimer -= dt;
+    if (state.slimeDamageTimer <= 0) {
+      state.slimeDamageTimer += SLIME_PUDDLE_DAMAGE_INTERVAL;
+      const strongest = puddlesUnderPlayer.reduce((best, puddle) =>
+        puddle.sourceDamage > best.sourceDamage ? puddle : best
+      );
+      if (player.iFrames <= 0 && !state.wizardShield) {
+        const damage = Math.max(0.25, strongest.sourceDamage * SLIME_PUDDLE_DAMAGE_MULTIPLIER);
+        player.hp -= damage;
+        player.iFrames = 0.25;
+        spawnText(state, player.pos, `-${damage.toFixed(1)}`, strongest.color);
+        sfxHurt();
+        updates.playerHp = player.hp;
+        needSync = true;
+        if (player.hp <= 0) {
+          updates.screen = "gameover";
+          state.roundActive = false;
+        }
+      }
+    }
+  } else {
+    state.slimeDamageTimer = 0;
+  }
 
   // Damage helper — automatically applies the ×1.5 curse amplifier if active.
   // Returns actual damage dealt (for accurate floating text).
@@ -717,9 +986,128 @@ export const updateGame = (
     updates.blitzerUltCharge = player.blitzerUltCharge;
     updates.ultChargePenalty = gameState.ultChargePenalty ?? 0;
   } else if (player.classType === "brute") {
+    // --- Active abilities: Shoulder Charge / Ground Quake / Berserker Rage ---
+    // Tick cooldowns and the Rage active window.
+    if (player.bruteChargeCd > 0) player.bruteChargeCd -= dt;
+    if (player.bruteQuakeCd > 0) player.bruteQuakeCd -= dt;
+    if (player.bruteRageActive > 0) {
+      player.bruteRageActive -= dt;
+      if (player.bruteRageActive <= 0) {
+        player.bruteRageActive = 0;
+        player.bruteRageCd = RAGE_COOLDOWN; // cooldown starts when the fury ends
+      }
+    } else if (player.bruteRageCd > 0) {
+      player.bruteRageCd -= dt;
+    }
+
+    // Shoulder Charge [SHIFT] — start a short rush along the facing direction.
+    if (
+      takePendingCharge() &&
+      player.bruteChargeCd <= 0 &&
+      !state.bruteCharge &&
+      (gameState.testMode || gameState.round >= ABILITIES_UNLOCK_ROUND)
+    ) {
+      let dirX = player.blitzerFacing.x, dirY = player.blitzerFacing.y;
+      const dlen = Math.hypot(dirX, dirY) || 1;
+      state.bruteCharge = {
+        dir: { x: dirX / dlen, y: dirY / dlen },
+        timeLeft: BRUTE_CHARGE_DURATION,
+        hitIds: new Set<string>(),
+      };
+      player.bruteChargeCd = CHARGE_COOLDOWN;
+      state.shakeTimer = Math.max(state.shakeTimer, 0.1);
+      sfxBruteCharge();
+    }
+
+    // Advance the rush: high-speed movement + plow-through damage/knockback.
+    if (state.bruteCharge) {
+      const ch = state.bruteCharge;
+      ch.timeLeft -= dt;
+      player.pos.x = Math.max(player.radius, Math.min(width - player.radius, player.pos.x + ch.dir.x * CHARGE_SPEED * dt));
+      player.pos.y = Math.max(player.radius, Math.min(height - player.radius, player.pos.y + ch.dir.y * CHARGE_SPEED * dt));
+      // Fading afterimages along the rush path (reuses the dash-trail pool).
+      state.blitzerDashTrail.push({
+        pos: { x: player.pos.x, y: player.pos.y },
+        timer: 0.3,
+        maxTime: 0.3,
+      });
+      // First enemy contact ends the rush and opens the clash QTE instead of
+      // resolving damage immediately. No contact → the rush just expires and
+      // the full (long) cooldown set at activation stands.
+      const hitR2 = CHARGE_HIT_RADIUS * CHARGE_HIT_RADIUS;
+      const contacts = enemies.filter(e => !e.markedForDeletion && distSq(player.pos, e.pos) < hitR2);
+      if (contacts.length > 0) {
+        const first = contacts[0];
+        state.bruteClash = {
+          pos: { x: (player.pos.x + first.pos.x) / 2, y: (player.pos.y + first.pos.y) / 2 },
+          dir: { x: ch.dir.x, y: ch.dir.y },
+          enemyIds: contacts.map(e => e.id),
+          timer: 0,
+          resolved: null,
+        };
+        state.bruteCharge = null;
+        contacts.forEach(e => { e.flashTimer = 0.15; });
+        state.shakeTimer = Math.max(state.shakeTimer, 0.15);
+        sfxClashLock();
+      } else if (ch.timeLeft <= 0) {
+        state.bruteCharge = null;
+      }
+    }
+
+    // Result linger — hold the resolved clash pose briefly for the flash, then clear.
+    if (state.bruteClash && state.bruteClash.resolved !== null) {
+      state.bruteClash.timer += dt;
+      if (state.bruteClash.timer >= CLASH_RESULT_LINGER) state.bruteClash = null;
+    }
+
+    // Ground Quake [Q] — instant stomp: AoE damage + brief paralyze.
+    if (
+      takePendingQuake() &&
+      player.bruteQuakeCd <= 0 &&
+      (gameState.testMode || gameState.round >= ABILITIES_UNLOCK_ROUND)
+    ) {
+      player.bruteQuakeCd = QUAKE_COOLDOWN;
+      state.bruteQuake = { pos: { x: player.pos.x, y: player.pos.y }, timer: 0 };
+      const r2 = QUAKE_RADIUS * QUAKE_RADIUS;
+      enemies.forEach(e => {
+        if (e.markedForDeletion) return;
+        if (distSq(player.pos, e.pos) < r2) {
+          const dealt = applyDmg(e, QUAKE_DAMAGE);
+          e.flashTimer = 0.15;
+          e.paralyzedTimer = Math.max(e.paralyzedTimer, QUAKE_PARALYZE);
+          spawnText(state, e.pos, dealt.toFixed(1), BRUTE_ABILITY_COLOR);
+          spawnParticles(state, e.pos, "#FBBF24");
+        }
+      });
+      state.shakeTimer = Math.max(state.shakeTimer, 0.35);
+      sfxQuake();
+    }
+
+    // Berserker Rage [E] — open the fury window (modifiers applied below).
+    if (
+      takePendingRage() &&
+      player.bruteRageCd <= 0 &&
+      player.bruteRageActive <= 0 &&
+      (gameState.testMode || gameState.round >= ABILITIES_UNLOCK_ROUND)
+    ) {
+      player.bruteRageActive = RAGE_DURATION;
+      state.shakeTimer = Math.max(state.shakeTimer, 0.2);
+      spawnText(state, { x: player.pos.x, y: player.pos.y - 32 }, "RAGE", "#F87171");
+      spawnParticles(state, player.pos, "#EF4444");
+      sfxRage();
+    }
+
+    // Quake shockwave ring visual clock.
+    if (state.bruteQuake) {
+      state.bruteQuake.timer += dt;
+      if (state.bruteQuake.timer >= QUAKE_RING_DURATION) state.bruteQuake = null;
+    }
+
+    // Auto-smash — Rage speeds up the swing interval and amplifies damage.
+    const raging = player.bruteRageActive > 0;
     player.attackTimer -= dt;
     if (player.attackTimer <= 0) {
-      player.attackTimer = 3;
+      player.attackTimer = raging ? 3 * RAGE_ATTACK_INTERVAL_MULT : 3;
       const targets = getNearestEnemies(3);
       targets.forEach(t => {
         if (distSq(player.pos, t.pos) < 200 * 200) {
@@ -729,7 +1117,7 @@ export const updateGame = (
             timer: 0,
             phase: "drop",
             enemyId: t.id,
-            damage: player.bruteDamage,
+            damage: raging ? player.bruteDamage * RAGE_DAMAGE_MULT : player.bruteDamage,
           });
         }
       });
@@ -993,6 +1381,9 @@ export const updateGame = (
 
       // Advance cosmetic stars outward from the ring centre.
       for (const s of u.stars) s.dist += s.speed * dt;
+
+      // Keep the player fully invulnerable for the entire Divine Pillar sequence.
+      player.iFrames = Math.max(player.iFrames, 0.1);
     }
 
     // Mirror charge to the bottom Divine Pillar bar.
@@ -1024,6 +1415,79 @@ export const updateGame = (
     }
     if (p.lifeTime <= 0) p.markedForDeletion = true;
   });
+
+  // --- Launched-enemy flight (clash chain-collision + wall impact) ---
+  // Must run BEFORE the main enemy forEach so chain-hit positions are up-to-date.
+  if (state.launchedEnemies.length) {
+    const CHAIN_KNOCKBACK = 70; // px the chain-hit victim is shoved in the launch direction
+    state.launchedEnemies.forEach(lc => {
+      const e = enemies.find(e => e.id === lc.enemyId && !e.markedForDeletion);
+      if (!e) { lc.timeLeft = 0; return; }
+
+      lc.timeLeft -= dt;
+      const startX = e.pos.x;
+      const startY = e.pos.y;
+
+      // Move along the velocity vector.
+      const nx = e.pos.x + lc.vel.x * dt;
+      const ny = e.pos.y + lc.vel.y * dt;
+
+      // Wall impact — reflect partially, apply one-time bonus damage.
+      let wallHit = false;
+      if ((nx - e.radius < 0 && lc.vel.x < 0) || (nx + e.radius > width && lc.vel.x > 0)) {
+        lc.vel.x = -lc.vel.x * 0.35;
+        wallHit = true;
+      }
+      if ((ny - e.radius < 0 && lc.vel.y < 0) || (ny + e.radius > height && lc.vel.y > 0)) {
+        lc.vel.y = -lc.vel.y * 0.35;
+        wallHit = true;
+      }
+      if (wallHit && !lc.hasHitWall) {
+        lc.hasHitWall = true;
+        e.hp -= lc.wallDmg;
+        e.flashTimer = Math.max(e.flashTimer, 0.2);
+        spawnText(state, e.pos, lc.wallDmg.toFixed(1), lc.color);
+        spawnParticles(state, e.pos, lc.color);
+        spawnParticles(state, e.pos, "#FFFFFF");
+        state.shakeTimer = Math.max(state.shakeTimer, 0.18);
+        sfxHit();
+      }
+
+      e.pos.x = Math.max(e.radius, Math.min(width - e.radius, nx));
+      e.pos.y = Math.max(e.radius, Math.min(height - e.radius, ny));
+      advanceSlimeTrail(state, e, dt, Math.hypot(e.pos.x - startX, e.pos.y - startY));
+
+      // Spawn a brief trail spark behind the flying enemy.
+      if (Math.random() < 0.55) {
+        spawnParticles(state, e.pos, lc.color);
+      }
+
+      // Chain collision: damage any enemy the launched one physically overlaps.
+      const velLen = Math.hypot(lc.vel.x, lc.vel.y) || 1;
+      const dirX = lc.vel.x / velLen;
+      const dirY = lc.vel.y / velLen;
+      enemies.forEach(other => {
+        if (other.markedForDeletion || lc.hitIds.has(other.id)) return;
+        if (distSq(e.pos, other.pos) < (e.radius + other.radius) ** 2) {
+          lc.hitIds.add(other.id);
+          const dealt = applyDmg(other, lc.chainDmg);
+          other.flashTimer = Math.max(other.flashTimer, 0.2);
+          // Knock the victim in the same direction the projectile is traveling.
+          const startX = other.pos.x;
+          const startY = other.pos.y;
+          other.pos.x = Math.max(other.radius, Math.min(width - other.radius, other.pos.x + dirX * CHAIN_KNOCKBACK));
+          other.pos.y = Math.max(other.radius, Math.min(height - other.radius, other.pos.y + dirY * CHAIN_KNOCKBACK));
+          advanceSlimeTrail(state, other, dt, Math.hypot(other.pos.x - startX, other.pos.y - startY));
+          spawnText(state, other.pos, dealt.toFixed(1), lc.color);
+          spawnParticles(state, other.pos, lc.color);
+          spawnParticles(state, other.pos, "#FFFFFF");
+          state.shakeTimer = Math.max(state.shakeTimer, 0.14);
+          sfxHit();
+        }
+      });
+    });
+    state.launchedEnemies = state.launchedEnemies.filter(lc => lc.timeLeft > 0);
+  }
 
   // Enemy logic
   let bossAlive = false;
@@ -1065,15 +1529,22 @@ export const updateGame = (
 
     // Paralysed enemies are fully rooted; slow only halves speed.
     // Enemies also freeze completely during the Divine Pillar ultimate sequence.
+    // Launched enemies are driven by the launchedEnemies block above — no AI movement.
     const angle = Math.atan2(player.pos.y - e.pos.y, player.pos.x - e.pos.x);
-    if (e.paralyzedTimer <= 0 && !state.wizardUlt) {
+    const isLaunched = state.launchedEnemies.some(lc => lc.enemyId === e.id);
+    const startX = e.pos.x;
+    const startY = e.pos.y;
+    if (!isLaunched && e.paralyzedTimer <= 0 && !state.wizardUlt) {
       const speed = e.slowTimer > 0 ? e.speed * 0.5 : e.speed;
       e.pos.x += Math.cos(angle) * speed * enemyDt;
       e.pos.y += Math.sin(angle) * speed * enemyDt;
     }
+    if (!isLaunched) {
+      advanceSlimeTrail(state, e, enemyDt, Math.hypot(e.pos.x - startX, e.pos.y - startY));
+    }
 
-    // Player collision
-    if (player.iFrames <= 0 && distSq(player.pos, e.pos) < (player.radius + e.radius) ** 2) {
+    // Player collision — launched enemies are projectiles, not attackers; skip their contact.
+    if (!isLaunched && player.iFrames <= 0 && distSq(player.pos, e.pos) < (player.radius + e.radius) ** 2) {
       if (state.wizardShield) {
         // While the Divine Shield exists (active OR in its break animation) the
         // wizard is completely invulnerable — no HP is ever deducted.
@@ -1184,14 +1655,18 @@ export const updateGame = (
         bobTimer: Math.random() * Math.PI * 2,
         magnetized: false
       });
-      if (e.isBoss) bossAlive = false;
-    } else if (e.isBoss) {
-      updates.bossHp = e.hp;
-      updates.bossMaxHp = e.maxHp;
-      needSync = true;
     }
   });
 
+  // A swarm has multiple simultaneous bosses, so report one aggregate health
+  // pool and only clear the boss state once every swarm member is gone.
+  const livingBosses = enemies.filter(e => e.isBoss && !e.markedForDeletion);
+  bossAlive = livingBosses.length > 0;
+  if (bossAlive) {
+    updates.bossHp = livingBosses.reduce((total, boss) => total + Math.max(0, boss.hp), 0);
+    updates.bossMaxHp = livingBosses.reduce((total, boss) => total + boss.maxHp, 0);
+    needSync = true;
+  }
   if (gameState.isBossAlive !== bossAlive) {
     updates.isBossAlive = bossAlive;
     needSync = true;
@@ -1379,11 +1854,25 @@ export const updateGame = (
     state.phantomClones = state.phantomClones.filter(c => c.life > 0);
   }
 
-  // Mirror brute mega-slam charge for the right-side HUD bar.
+  // Mirror brute mega-slam charge + ability state for the HUD readouts.
   liveBruteState.isBrute = state.player.classType === "brute";
   if (liveBruteState.isBrute) {
     liveBruteState.slamActive = !!state.megaSlam;
     liveBruteState.charge = Math.min(1, state.player.bruteHitCount / HITS_TO_CHARGE);
+    liveBruteState.chargeActive = !!state.bruteCharge;
+    liveBruteState.chargeCdPct = Math.max(0, state.player.bruteChargeCd / CHARGE_COOLDOWN);
+    liveBruteState.chargeReady = state.player.bruteChargeCd <= 0;
+    liveBruteState.quakeCdPct = Math.max(0, state.player.bruteQuakeCd / QUAKE_COOLDOWN);
+    liveBruteState.quakeReady = state.player.bruteQuakeCd <= 0;
+    liveBruteState.rageActive = state.player.bruteRageActive > 0;
+    liveBruteState.rageCdPct = state.player.bruteRageActive > 0
+      ? 1
+      : Math.max(0, state.player.bruteRageCd / RAGE_COOLDOWN);
+    liveBruteState.rageReady = state.player.bruteRageActive <= 0 && state.player.bruteRageCd <= 0;
+    liveBruteState.clashActive = !!state.bruteClash && state.bruteClash.resolved === null;
+    liveBruteState.clashResult = state.bruteClash?.resolved ?? null;
+    liveBruteState.abilitiesUnlocked =
+      !!gameState.testMode || gameState.round >= ABILITIES_UNLOCK_ROUND;
   } else {
     resetBruteState();
   }
@@ -1441,6 +1930,34 @@ export const renderGame = (ctx: CanvasRenderingContext2D, state: TransientGameSt
   for (let x = 0; x <= width; x += gridSize) { ctx.moveTo(x, 0); ctx.lineTo(x, height); }
   for (let y = 0; y <= height; y += gridSize) { ctx.moveTo(0, y); ctx.lineTo(width, y); }
   ctx.stroke();
+
+  // Slime trails sit on the arena floor beneath enemies and the player. Their
+  // irregular double-blob shape makes connected drops read as liquid rather
+  // than as a line of identical circles.
+  state.slimePuddles.forEach(puddle => {
+    const life = Math.max(0, puddle.lifeTime / puddle.maxLife);
+    const fade = life < 0.25 ? life / 0.25 : 1;
+    const pulse = 0.88 + Math.sin(state.animTime * 5 + puddle.pos.x * 0.04) * 0.08;
+    ctx.save();
+    ctx.globalAlpha = 0.32 * fade;
+    ctx.fillStyle = puddle.color;
+    ctx.beginPath();
+    ctx.ellipse(puddle.pos.x, puddle.pos.y, puddle.radius * pulse, puddle.radius * 0.68 * pulse, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = 0.18 * fade;
+    ctx.beginPath();
+    ctx.ellipse(
+      puddle.pos.x - puddle.radius * 0.26,
+      puddle.pos.y + puddle.radius * 0.16,
+      puddle.radius * 0.52,
+      puddle.radius * 0.36,
+      0.55,
+      0,
+      Math.PI * 2
+    );
+    ctx.fill();
+    ctx.restore();
+  });
 
   // Coins
   state.coins.forEach(c => {
@@ -1510,6 +2027,36 @@ export const renderGame = (ctx: CanvasRenderingContext2D, state: TransientGameSt
     }
   });
 
+  // Launched-enemy motion streaks — drawn before the sprite so they appear behind it.
+  state.launchedEnemies.forEach(lc => {
+    const e = state.enemies.find(e => e.id === lc.enemyId);
+    if (!e) return;
+    const velLen = Math.hypot(lc.vel.x, lc.vel.y) || 1;
+    const dx = lc.vel.x / velLen;
+    const dy = lc.vel.y / velLen;
+    const streakLen = Math.min(velLen * 0.045, 48); // length proportional to speed
+    for (let i = 4; i >= 1; i--) {
+      const t = i / 4;
+      const sx = e.pos.x - dx * streakLen * t;
+      const sy = e.pos.y - dy * streakLen * t;
+      ctx.globalAlpha = (1 - t) * 0.55;
+      ctx.fillStyle = lc.color;
+      const r = e.radius * (1 - t * 0.4);
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    // Outer glow ring around the flying enemy.
+    ctx.globalAlpha = 0.35;
+    ctx.strokeStyle = lc.color;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(e.pos.x, e.pos.y, e.radius + 5, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  });
+
   // Enemies — use cached sprites; replace ctx.filter with cheap overlays
   state.enemies.forEach(e => {
     const sprite = e.isDummy ? DUMMY_SPRITE : e.isBoss ? getCachedBoss(e.tier) : getCachedEnemy(e.tier);
@@ -1530,7 +2077,7 @@ export const renderGame = (ctx: CanvasRenderingContext2D, state: TransientGameSt
       ctx.fillStyle = "#EF4444";
       ctx.fillRect(e.pos.x - barW / 2, e.pos.y - 27, barW * pct, 5);
       ctx.fillStyle = "#FFFFFF";
-      ctx.font = "bold 10px monospace";
+      ctx.font = "bold 10px Quicksand, sans-serif";
       ctx.textAlign = "center";
       ctx.fillText(`${e.hp.toFixed(1)} / ${e.maxHp}`, e.pos.x, e.pos.y - 34);
       ctx.textAlign = "left";
@@ -1842,6 +2389,37 @@ export const renderGame = (ctx: CanvasRenderingContext2D, state: TransientGameSt
     }
   }
 
+  // Ground Quake shockwave — expanding gold/red rings + ground crack lines.
+  if (state.bruteQuake) {
+    const q = state.bruteQuake;
+    const t = Math.min(1, q.timer / QUAKE_RING_DURATION);
+    const a = 1 - t;
+    ctx.save();
+    ctx.strokeStyle = `rgba(251, 191, 36, ${a * 0.9})`;
+    ctx.lineWidth = 6 * a;
+    ctx.beginPath();
+    ctx.arc(q.pos.x, q.pos.y, QUAKE_RADIUS * t, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = `rgba(239, 68, 68, ${a * 0.6})`;
+    ctx.lineWidth = 3 * a;
+    ctx.beginPath();
+    ctx.arc(q.pos.x, q.pos.y, QUAKE_RADIUS * t * 0.65, 0, Math.PI * 2);
+    ctx.stroke();
+    // Radiating crack lines that fade with the rings.
+    ctx.strokeStyle = `rgba(120, 53, 15, ${a * 0.8})`;
+    ctx.lineWidth = 2;
+    for (let i = 0; i < 8; i++) {
+      const ang = (i / 8) * Math.PI * 2 + 0.4;
+      const inner = 12;
+      const outer = inner + QUAKE_RADIUS * 0.5 * t;
+      ctx.beginPath();
+      ctx.moveTo(q.pos.x + Math.cos(ang) * inner, q.pos.y + Math.sin(ang) * inner);
+      ctx.lineTo(q.pos.x + Math.cos(ang) * outer, q.pos.y + Math.sin(ang) * outer);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   // Wizard Divine Pillar sequence (rings → beam → stars → radiant field).
   drawWizardUltimate(ctx, state, width, height);
 
@@ -1963,6 +2541,27 @@ export const renderGame = (ctx: CanvasRenderingContext2D, state: TransientGameSt
     );
   }
 
+  // Berserker Rage — pulsing red tint over the brute + rising ember particles.
+  if (state.player.classType === "brute" && state.player.bruteRageActive > 0) {
+    const sprite = SPRITES.brute;
+    const hw = (sprite[0].length * 3) / 2;
+    const hh = (sprite.length * 3) / 2;
+    ctx.globalAlpha = 0.25 + Math.abs(Math.sin(state.animTime * 12)) * 0.2;
+    ctx.fillStyle = "#EF4444";
+    ctx.fillRect(state.player.pos.x - hw, state.player.pos.y - hh, hw * 2, hh * 2);
+    ctx.globalAlpha = 1;
+    // Flickering embers rising around the raging brute.
+    for (let i = 0; i < 6; i++) {
+      const phase = (state.animTime * 1.6 + i * 0.37) % 1;
+      const ex = state.player.pos.x + Math.sin(i * 2.1 + state.animTime * 5) * (hw + 6);
+      const ey = state.player.pos.y + hh - phase * (hh * 2 + 14);
+      ctx.globalAlpha = 0.8 * (1 - phase);
+      ctx.fillStyle = i % 2 === 0 ? "#F87171" : "#FBBF24";
+      ctx.fillRect(ex - 1.5, ey - 1.5, 3, 3);
+    }
+    ctx.globalAlpha = 1;
+  }
+
   // Wizard aftermath shield (aura + wings) drawn over the player sprite.
   drawWizardShield(ctx, state);
 
@@ -1975,7 +2574,7 @@ export const renderGame = (ctx: CanvasRenderingContext2D, state: TransientGameSt
   ctx.globalAlpha = 1;
 
   // Texts
-  ctx.font = "bold 16px 'Courier New', monospace";
+  ctx.font = "bold 16px Quicksand, sans-serif";
   ctx.textAlign = "center";
   state.texts.forEach(t => {
     ctx.fillStyle = t.color;
@@ -1984,7 +2583,109 @@ export const renderGame = (ctx: CanvasRenderingContext2D, state: TransientGameSt
   });
   ctx.globalAlpha = 1;
 
+  // Shoulder Charge clash QTE — dim the arena, spark the clash point, and draw
+  // the shrinking timing ring + perfect-zone band + SPACE prompt; then the result flash.
+  if (state.bruteClash) {
+    const clash = state.bruteClash;
+    ctx.save();
+    if (clash.resolved === null) {
+      const prog = Math.max(0, 1 - clash.timer / CLASH_WINDOW); // 1 → 0
+      // Freeze-frame dim over everything already drawn.
+      ctx.fillStyle = "rgba(0, 0, 0, 0.42)";
+      ctx.fillRect(0, 0, width, height);
+      // Strain sparks flying off the lock point.
+      for (let i = 0; i < 8; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const d = 6 + Math.random() * 22;
+        ctx.fillStyle = i % 2 === 0 ? "#FBBF24" : "#F87171";
+        ctx.fillRect(clash.pos.x + Math.cos(a) * d - 1.5, clash.pos.y + Math.sin(a) * d - 1.5, 3, 3);
+      }
+      const maxR = 64, minR = 14;
+      const perfectZoneR = minR + CLASH_PERFECT_ZONE * (maxR - minR); // inner edge of perfect band
+      // Perfect-zone band: highlighted ring between minR and perfectZoneR showing
+      // the window where a PERFECT press fires. Always visible so the player
+      // knows where to aim before the first attempt.
+      ctx.beginPath();
+      ctx.arc(clash.pos.x, clash.pos.y, perfectZoneR, 0, Math.PI * 2);
+      ctx.arc(clash.pos.x, clash.pos.y, minR, 0, Math.PI * 2, true);
+      ctx.fillStyle = "rgba(52, 211, 153, 0.28)"; // translucent green band
+      ctx.fill();
+      // Perfect zone outer edge marker.
+      ctx.strokeStyle = "rgba(52, 211, 153, 0.7)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(clash.pos.x, clash.pos.y, perfectZoneR, 0, Math.PI * 2); ctx.stroke();
+
+      // Shrinking timing ring — gold → orange → red, snaps green inside perfect zone.
+      const r = minR + (maxR - minR) * prog;
+      const inPerfect = r <= perfectZoneR + 1; // +1px tolerance for visual snap
+      ctx.strokeStyle = inPerfect ? "#34D399" : (prog < 0.35 ? "#EF4444" : "#FBBF24");
+      ctx.lineWidth = inPerfect ? 6 : 5;
+      ctx.beginPath(); ctx.arc(clash.pos.x, clash.pos.y, r, 0, Math.PI * 2); ctx.stroke();
+      // Static inner target ring.
+      ctx.strokeStyle = "rgba(254, 243, 199, 0.75)";
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(clash.pos.x, clash.pos.y, minR, 0, Math.PI * 2); ctx.stroke();
+      // Prompt — shows PERFECT! hint when inside the zone.
+      ctx.font = "bold 22px Quicksand, sans-serif";
+      ctx.textAlign = "center";
+      if (inPerfect) {
+        ctx.fillStyle = "#34D399";
+        ctx.fillText("★ PERFECT ZONE! ★", clash.pos.x, clash.pos.y - maxR - 16);
+      } else {
+        ctx.fillStyle = prog < 0.35 ? "#FCA5A5" : "#FDE68A";
+        ctx.fillText("PRESS SPACE!", clash.pos.x, clash.pos.y - maxR - 16);
+      }
+    } else {
+      // Result flash — expanding ring + verdict text fading over the linger.
+      const t = Math.min(1, clash.timer / CLASH_RESULT_LINGER); // 0 → 1
+      const a = 1 - t;
+      const result = clash.resolved; // "perfect" | "good" | "miss"
+      const col = result === "perfect" ? "251, 191, 36"
+                : result === "good"    ? "251, 146, 60"
+                : "156, 163, 175";
+      const expandR = result === "perfect" ? 220 : result === "good" ? 140 : 90;
+      ctx.strokeStyle = `rgba(${col}, ${a})`;
+      ctx.lineWidth = (result === "perfect" ? 8 : result === "good" ? 6 : 4) * a;
+      ctx.beginPath();
+      ctx.arc(clash.pos.x, clash.pos.y, expandR * t + 14, 0, Math.PI * 2);
+      ctx.stroke();
+      if (result === "perfect") {
+        ctx.fillStyle = `rgba(253, 230, 138, ${a * 0.25})`;
+        ctx.fillRect(0, 0, width, height);
+      } else if (result === "good") {
+        ctx.fillStyle = `rgba(251, 146, 60, ${a * 0.12})`;
+        ctx.fillRect(0, 0, width, height);
+      }
+      ctx.font = "bold 26px Quicksand, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillStyle = `rgba(${col}, ${a})`;
+      const label = result === "perfect" ? "PERFECT!" : result === "good" ? "GOOD!" : "MISS";
+      ctx.fillText(label, clash.pos.x, clash.pos.y - 80 - t * 20);
+    }
+    ctx.restore();
+  }
+
   ctx.restore();
+
+  // Round announcements are screen-space UI: they ignore the arena shake and
+  // never block player input.
+  if (state.announcement) {
+    const a = state.announcement;
+    const age = 1 - a.timer / a.maxTime;
+    const fade = Math.min(1, age * 5, a.timer * 2);
+    ctx.save();
+    ctx.globalAlpha = fade;
+    ctx.fillStyle = "rgba(69, 10, 10, 0.26)";
+    ctx.fillRect(0, 0, width, height);
+    ctx.textAlign = "center";
+    ctx.font = "bold 34px Quicksand, sans-serif";
+    ctx.fillStyle = "#FCA5A5";
+    ctx.fillText(a.text, width / 2, height / 2 - 6);
+    ctx.font = "bold 15px Quicksand, sans-serif";
+    ctx.fillStyle = "#FDE68A";
+    ctx.fillText("THE BLOOD EMPRESSES APPROACH", width / 2, height / 2 + 26);
+    ctx.restore();
+  }
 };
 
 const spawnParticles = (state: TransientGameState, pos: Vector2, color: string) => {
@@ -2145,7 +2846,7 @@ const drawWizardUltimate = (
     ctx.restore();
   }
 
-  // Radiant field overlay during the 5 s radiance window — pulsing gold wash.
+  // Radiant field — subtle pulsing gold tint during the radiance window.
   if (u.phase === "radiance") {
     const rf = Math.max(0, u.radianceTimer / RADIANCE_DURATION); // 1 → 0
     const pulse = 0.07 + Math.abs(Math.sin(animTime * 4)) * 0.06;

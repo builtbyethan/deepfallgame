@@ -60,8 +60,11 @@ const BOSS_TIERS: { dark: string; mid: string; light: string; crown: string }[] 
   { dark: "#831843", mid: "#DB2777", light: "#F9A8D4", crown: "#A5F3FC" }, // tier 5+: blood empress
 ];
 
+export const getBossTier = (tier: number) =>
+  BOSS_TIERS[Math.min(Math.max(tier - 1, 0), BOSS_TIERS.length - 1)];
+
 export const makeBossSprite = (tier: number): (string | null)[][] => {
-  const t = BOSS_TIERS[Math.min(Math.max(tier - 1, 0), BOSS_TIERS.length - 1)];
+  const t = getBossTier(tier);
   const { dark: D, mid: M, light: L, crown: C } = t;
   return [
     [null, null, C, null, C, null, C, null, null],
