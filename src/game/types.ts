@@ -273,6 +273,9 @@ export interface TransientGameState {
   coins: Coin[];
   slimePuddles: SlimePuddle[];
   slimeDamageTimer: number;
+  // Total max HP of every boss spawned this round, captured at spawn time so the
+  // aggregate boss bar keeps a fixed denominator as swarm members die.
+  bossTotalMaxHp: number;
   announcement: { text: string; timer: number; maxTime: number } | null;
   fistSlams: FistSlam[];
   megaSlam: MegaSlam | null;

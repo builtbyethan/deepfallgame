@@ -220,6 +220,7 @@ export const initGame = (gameState: GameState, width: number, height: number): T
     coins: [],
     slimePuddles: [],
     slimeDamageTimer: 0,
+    bossTotalMaxHp: 0,
     announcement: gameState.round === BOSS_SWARM_ROUND && !gameState.testMode
       ? { text: "WARNING! BOSS SWARM", timer: BOSS_SWARM_WARNING_DURATION, maxTime: BOSS_SWARM_WARNING_DURATION }
       : null,
@@ -281,6 +282,7 @@ export const initGame = (gameState: GameState, width: number, height: number): T
       superShock: false,
       tier: bossTier
     });
+    state.bossTotalMaxHp += bossHp;
   };
 
   if (round === BOSS_SWARM_ROUND) {
@@ -428,7 +430,7 @@ export const updateGame = (
       // reached the inner target ring (progress ≤ CLASH_PERFECT_ZONE).
       const prog = Math.max(0, 1 - clash.timer / CLASH_WINDOW);
       let result: "perfect" | "good" | "miss";
-      if (!pressed || timedOut) {
+      if (!pressed) {
         result = "miss";
       } else if (prog <= CLASH_PERFECT_ZONE) {
         result = "perfect";
@@ -1664,7 +1666,7 @@ export const updateGame = (
   bossAlive = livingBosses.length > 0;
   if (bossAlive) {
     updates.bossHp = livingBosses.reduce((total, boss) => total + Math.max(0, boss.hp), 0);
-    updates.bossMaxHp = livingBosses.reduce((total, boss) => total + boss.maxHp, 0);
+    updates.bossMaxHp = state.bossTotalMaxHp;
     needSync = true;
   }
   if (gameState.isBossAlive !== bossAlive) {
